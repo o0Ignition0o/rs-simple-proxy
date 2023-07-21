@@ -1,5 +1,6 @@
 use crate::proxy::error::MiddlewareError;
 use crate::proxy::service::{ServiceContext, State};
+use async_trait::async_trait;
 use hyper::{Body, Error, Request, Response};
 
 pub enum MiddlewareResult {
@@ -9,6 +10,7 @@ pub enum MiddlewareResult {
 
 use self::MiddlewareResult::Next;
 
+#[async_trait]
 pub trait Middleware {
     fn name() -> String
     where
@@ -76,7 +78,25 @@ pub trait Middleware {
         Ok(Next)
     }
 
+    async fn before_request_async(
+        &mut self,
+        _req: &mut Request<Body>,
+        _ctx: &ServiceContext,
+        _state: &State,
+    ) -> Result<MiddlewareResult, MiddlewareError> {
+        Ok(Next)
+    }
+
     fn after_request(
+        &mut self,
+        _res: Option<&mut Response<Body>>,
+        _ctx: &ServiceContext,
+        _state: &State,
+    ) -> Result<MiddlewareResult, MiddlewareError> {
+        Ok(Next)
+    }
+
+    async fn after_request_async(
         &mut self,
         _res: Option<&mut Response<Body>>,
         _ctx: &ServiceContext,

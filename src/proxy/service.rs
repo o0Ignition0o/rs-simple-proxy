@@ -1,14 +1,11 @@
-use futures::future;
-use futures::future::TryFutureExt;
+use futures::future::BoxFuture;
 use hyper::client::connect::HttpConnector;
 use hyper::service::Service;
 use hyper::{Body, Client, Request, Response};
-use std::future::Future;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::{
-    pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
@@ -39,7 +36,7 @@ pub struct ServiceContext {
 impl Service<Request<hyper::Body>> for ProxyService {
     type Response = Response<hyper::Body>;
     type Error = hyper::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         match self.client.poll_ready(cx) {
@@ -73,49 +70,85 @@ impl Service<Request<hyper::Body>> for ProxyService {
         };
 
         let mut before_res: Option<Response<Body>> = None;
-        for mw in self.middlewares.lock().unwrap().iter_mut() {
-            // Run all middlewares->before_request
-            if let Some(res) = match mw.before_request(&mut req, &context, &self.state) {
-                Err(err) => Some(Response::from(err)),
-                Ok(RespondWith(response)) => Some(response),
-                Ok(Next) => None,
-            } {
-                // Stop when an early response is wanted
-                before_res = Some(res);
-                break;
+
+        let middlewares = self.middlewares.clone();
+        let client = self.client.clone();
+        let state = self.state.clone();
+
+        Box::pin(async move {
+            for mw in middlewares.lock().await.iter_mut() {
+                // Run all middlewares->before_request
+                if let Some(res) = match mw.before_request(&mut req, &context, &state) {
+                    Err(err) => Some(Response::from(err)),
+                    Ok(RespondWith(response)) => Some(response),
+                    Ok(Next) => None,
+                } {
+                    // Stop when an early response is wanted
+                    before_res = Some(res);
+                    break;
+                }
+
+                // Run all middlewares->before_request_async
+                if let Some(res) = match mw.before_request_async(&mut req, &context, &state).await {
+                    Err(err) => Some(Response::from(err)),
+                    Ok(RespondWith(response)) => Some(response),
+                    Ok(Next) => None,
+                } {
+                    // Stop when an early response is wanted
+                    before_res = Some(res);
+                    break;
+                }
             }
-        }
 
-        if let Some(res) = before_res {
-            return Box::pin(future::ok(self.early_response(&context, res, &self.state)));
-        }
+            if let Some(res) = before_res {
+                return Ok(Self::early_response(&middlewares, &context, res, &state).await);
+            }
 
-        let res = self
-            .client
-            .request(req)
-            .map_err(move |err| {
-                for mw in mws_failure.lock().unwrap().iter_mut() {
-                    // TODO: think about graceful handling
-                    if let Err(err) = mw.request_failure(&err, &context, &state_failure) {
-                        error!("Request_failure errored: {:?}", &err);
+            let maybe_res = match client.request(req).await {
+                Err(err) => {
+                    for mw in mws_failure.lock().await.iter_mut() {
+                        // TODO: think about graceful handling
+                        if let Err(err) = mw.request_failure(&err, &context, &state_failure) {
+                            error!("Request_failure errored: {:?}", &err);
+                        }
                     }
+                    Err(err)
                 }
-                err
-            })
-            .map_ok(move |mut res| {
-                for mw in mws_success.lock().unwrap().iter_mut() {
-                    match mw.request_success(&mut res, &context, &state_success) {
-                        Err(err) => res = Response::from(err),
-                        Ok(RespondWith(response)) => res = response,
-                        Ok(Next) => (),
+                Ok(mut res) => {
+                    for mw in mws_success.lock().await.iter_mut() {
+                        match mw.request_success(&mut res, &context, &state_success) {
+                            Err(err) => res = Response::from(err),
+                            Ok(RespondWith(response)) => res = response,
+                            Ok(Next) => (),
+                        }
                     }
+                    Ok(res)
                 }
-                res
-            })
-            .map_ok_or_else(
-                move |err| {
+            };
+
+            match maybe_res {
+                Ok(mut res) => {
+                    for mw in mws_after_failure.lock().await.iter_mut() {
+                        match mw.after_request(Some(&mut res), &context, &state_after_failure) {
+                            Err(err) => res = Response::from(err),
+                            Ok(RespondWith(response)) => res = response,
+                            Ok(Next) => (),
+                        }
+
+                        match mw
+                            .after_request_async(Some(&mut res), &context, &state_after_failure)
+                            .await
+                        {
+                            Err(err) => res = Response::from(err),
+                            Ok(RespondWith(response)) => res = response,
+                            Ok(Next) => (),
+                        }
+                    }
+                    Ok(res)
+                }
+                Err(err) => {
                     let mut res = Err(err);
-                    for mw in mws_after_success.lock().unwrap().iter_mut() {
+                    for mw in mws_after_success.lock().await.iter_mut() {
                         match mw.after_request(None, &context, &state_after_success) {
                             Err(err) => res = Ok(Response::from(err)),
                             Ok(RespondWith(response)) => res = Ok(response),
@@ -123,31 +156,20 @@ impl Service<Request<hyper::Body>> for ProxyService {
                         }
                     }
                     res
-                },
-                move |mut res| {
-                    for mw in mws_after_failure.lock().unwrap().iter_mut() {
-                        match mw.after_request(Some(&mut res), &context, &state_after_failure) {
-                            Err(err) => res = Response::from(err),
-                            Ok(RespondWith(response)) => res = response,
-                            Ok(Next) => (),
-                        }
-                    }
-                    Ok(res)
-                },
-            );
-
-        Box::pin(res)
+                }
+            }
+        })
     }
 }
 
 impl ProxyService {
-    fn early_response(
-        &self,
+    async fn early_response(
+        middlewares: &Middlewares,
         context: &ServiceContext,
         mut res: Response<Body>,
         state: &State,
     ) -> Response<Body> {
-        for mw in self.middlewares.lock().unwrap().iter_mut() {
+        for mw in middlewares.lock().await.iter_mut() {
             match mw.after_request(Some(&mut res), context, state) {
                 Err(err) => res = Response::from(err),
                 Ok(RespondWith(response)) => res = response,
