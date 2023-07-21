@@ -20,7 +20,7 @@ use crate::proxy::middleware::MiddlewareResult::*;
 use crate::Middlewares;
 
 // type BoxFut = Box<dyn Future<Output = Result<hyper::Response<Body>, hyper::Error>> + Send>;
-pub type State = Arc<Mutex<HashMap<(String, u64), String>>>;
+pub type State = Arc<Mutex<HashMap<(String, u64), serde_json::Value>>>;
 
 pub struct ProxyService {
     client: Client<HttpConnector>,

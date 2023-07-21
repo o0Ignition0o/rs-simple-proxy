@@ -125,7 +125,7 @@ impl Middleware for Router {
                 self.set_state(
                     context.req_id,
                     state,
-                    serde_json::to_string(&MatchedRoute {
+                    serde_json::to_value(&MatchedRoute {
                         uri: req.uri().to_string(),
                         public,
                     })?,

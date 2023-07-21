@@ -30,7 +30,7 @@ impl Middleware for Logger {
             req.method(),
             req.uri()
         );
-        let now = serde_json::to_string(&Utc::now()).expect("[Logger] Cannot serialize DateTime");
+        let now = serde_json::to_value(&Utc::now()).expect("[Logger] Cannot serialize DateTime");
         self.set_state(context.req_id, state, now)?;
         Ok(Next)
     }
@@ -44,7 +44,7 @@ impl Middleware for Logger {
         let start_time = self.get_state(context.req_id, state)?;
         match start_time {
             Some(time) => {
-                let start_time: DateTime<Utc> = serde_json::from_str(&time)?;
+                let start_time: DateTime<Utc> = serde_json::from_value(time)?;
 
                 info!(
                     "[{}] Request took {}ms",

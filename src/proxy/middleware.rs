@@ -21,7 +21,12 @@ pub trait Middleware {
         Self::name()
     }
 
-    fn set_state(&self, req_id: u64, state: &State, data: String) -> Result<(), MiddlewareError>
+    fn set_state(
+        &self,
+        req_id: u64,
+        state: &State,
+        data: serde_json::Value,
+    ) -> Result<(), MiddlewareError>
     where
         Self: Sized,
     {
@@ -30,7 +35,7 @@ pub trait Middleware {
         Ok(())
     }
 
-    fn state(req_id: u64, state: &State) -> Result<Option<String>, MiddlewareError>
+    fn state(req_id: u64, state: &State) -> Result<Option<serde_json::Value>, MiddlewareError>
     where
         Self: Sized,
     {
@@ -38,7 +43,7 @@ pub trait Middleware {
         debug!("State length: {}", state.len());
         let state = match state.get(&(Self::name(), req_id)) {
             None => None,
-            Some(state) => Some(state.to_string()),
+            Some(state) => Some(state.clone()),
         };
 
         debug!(
@@ -51,7 +56,11 @@ pub trait Middleware {
         Ok(state)
     }
 
-    fn get_state(&self, req_id: u64, state: &State) -> Result<Option<String>, MiddlewareError>
+    fn get_state(
+        &self,
+        req_id: u64,
+        state: &State,
+    ) -> Result<Option<serde_json::Value>, MiddlewareError>
     where
         Self: Sized,
     {
