@@ -7,6 +7,7 @@ extern crate serde_derive;
 pub mod middlewares;
 pub mod proxy;
 
+use futures::{select, Future, FutureExt};
 use hyper::server::conn::AddrStream;
 use hyper::service::make_service_fn;
 use hyper::Server;
@@ -86,6 +87,29 @@ impl SimpleProxy {
             eprintln!("server error: {}", e);
         }
         Ok(())
+    }
+
+    pub async fn run_with_graceful_shutdown(
+        &self,
+        shutdown_signal: impl Future<Output = ()> + Send + Sync + 'static,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut server = Box::pin(self.run().fuse());
+        let mut shutdown = Box::pin(
+            async {
+                shutdown_signal.await;
+                Ok(())
+            }
+            .fuse(),
+        );
+        select! {
+            _ = server => {
+                server.boxed()
+            },
+            _ = shutdown => {
+                shutdown.boxed()
+            }
+        }
+        .await
     }
 
     pub async fn add_middleware(&mut self, middleware: Box<dyn Middleware + Send + Sync>) {
