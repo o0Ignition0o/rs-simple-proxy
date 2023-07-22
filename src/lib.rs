@@ -93,23 +93,19 @@ impl SimpleProxy {
         &self,
         shutdown_signal: impl Future<Output = ()> + Send + Sync + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut server = Box::pin(self.run().fuse());
-        let mut shutdown = Box::pin(
-            async {
-                shutdown_signal.await;
-                Ok(())
-            }
-            .fuse(),
-        );
+        let server = Box::pin(self.run());
+        let shutdown = Box::pin(async {
+            shutdown_signal.await;
+            Ok(())
+        });
         select! {
-            _ = server => {
-                server.boxed()
+            s1 = server.fuse() => {
+                s1
             },
-            _ = shutdown => {
-                shutdown.boxed()
+            s2 = shutdown.fuse() => {
+                s2
             }
         }
-        .await
     }
 
     pub async fn add_middleware(&mut self, middleware: Box<dyn Middleware + Send + Sync>) {
