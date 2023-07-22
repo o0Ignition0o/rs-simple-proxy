@@ -91,18 +91,17 @@ impl SimpleProxy {
 
     pub async fn run_with_graceful_shutdown(
         &self,
-        shutdown_signal: impl Future<Output = ()> + Send + Sync + 'static,
+        shutdown_signal: impl Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>
+            + Send
+            + Sync
+            + 'static,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let server = Box::pin(self.run());
-        let shutdown = Box::pin(async {
-            shutdown_signal.await;
-            Ok(())
-        });
         select! {
             s1 = server.fuse() => {
                 s1
             },
-            s2 = shutdown.fuse() => {
+            s2 = shutdown_signal.fuse() => {
                 s2
             }
         }
